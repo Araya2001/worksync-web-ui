@@ -1,0 +1,450 @@
+{
+  "jobber_quickbooks_integration_guide": {
+    "overview": {
+      "description": "Comprehensive guide for integrating Jobber (job management) with QuickBooks Online (accounting)",
+      "recommended_pattern": "One-way sync from Jobber to QuickBooks with real-time updates",
+      "api_types": {
+        "jobber": "GraphQL API with single endpoint",
+        "quickbooks": "REST API with multiple resource endpoints"
+      }
+    },
+
+    "authentication": {
+      "jobber": {
+        "method": "OAuth 2.0 Authorization Code Grant",
+        "authorization_url": "https://api.getjobber.com/api/oauth/authorize",
+        "token_url": "https://api.getjobber.com/api/oauth/token",
+        "token_expiration": "60 minutes (access token)",
+        "refresh_token": "Use for automatic token renewal",
+        "header_format": "Authorization: Bearer <ACCESS_TOKEN>",
+        "implementation_example": {
+          "auth_flow": "Standard OAuth 2.0 server-side flow",
+          "token_refresh": "Automatic on 401 Invalid Token Error",
+          "security_notes": "Store client secret securely, never expose publicly"
+        }
+      },
+      "quickbooks": {
+        "method": "OAuth 2.0 Authorization Code Flow",
+        "authorization_url": "https://appcenter.intuit.com/connect/oauth2",
+        "token_url": "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+        "scope": "com.intuit.quickbooks.accounting",
+        "token_expiration": "59 minutes (access token), 100 days (refresh token)",
+        "environments": {
+          "sandbox": "https://sandbox-quickbooks.api.intuit.com",
+          "production": "https://quickbooks.api.intuit.com"
+        },
+        "implementation_example": {
+          "token_refresh_endpoint": "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+          "grant_type": "refresh_token",
+          "security_requirement": "Security assessment required for production"
+        }
+      }
+    },
+
+    "api_endpoints": {
+      "jobber": {
+        "base_url": "https://api.getjobber.com/api/graphql",
+        "method": "POST",
+        "content_type": "application/json",
+        "version_header": "X-JOBBER-GRAPHQL-VERSION: 2023-11-15",
+        "core_operations": {
+          "clients": {
+            "query": "clients { nodes { id firstName lastName companyName emails { address } billingAddress { city } } }",
+            "create": "clientCreate(input: { firstName: \"Name\" lastName: \"Last\" emails: [{ description: MAIN primary: true address: \"email@example.com\" }] })",
+            "purpose": "Manage customer data for sync to QuickBooks customers"
+          },
+          "jobs": {
+            "query": "jobs { nodes { id jobNumber title jobStatus client { id } lineItems { nodes { name quantity unitCost } } } }",
+            "purpose": "Retrieve job data to generate QuickBooks invoices"
+          },
+          "invoices": {
+            "query": "invoices { nodes { id invoiceNumber amounts { total } client { id } lineItems { nodes { name quantity unitPrice } } } }",
+            "purpose": "Get invoice data for QuickBooks synchronization"
+          },
+          "timeSheetEntries": {
+            "query": "timeSheetEntries { nodes { id finalDuration labourRate client { id } job { id } } }",
+            "purpose": "Track billable time for invoice line items"
+          }
+        }
+      },
+      "quickbooks": {
+        "base_url": "https://quickbooks.api.intuit.com/v3/company/{realmId}",
+        "content_type": "application/json",
+        "core_endpoints": {
+          "customers": {
+            "get": "GET /customer",
+            "create": "POST /customer",
+            "update": "POST /customer",
+            "query_example": "SELECT * FROM Customer WHERE Active = true",
+            "purpose": "Manage customer records synced from Jobber clients"
+          },
+          "items": {
+            "get": "GET /item",
+            "create": "POST /item",
+            "update": "POST /item",
+            "purpose": "Manage service items for job line items"
+          },
+          "invoices": {
+            "get": "GET /invoice",
+            "create": "POST /invoice",
+            "update": "POST /invoice",
+            "send": "POST /invoice/{id}/send",
+            "purpose": "Create and manage invoices from Jobber jobs"
+          },
+          "payments": {
+            "get": "GET /payment",
+            "create": "POST /payment",
+            "update": "POST /payment",
+            "purpose": "Record payments received for invoices"
+          },
+          "batch_operations": {
+            "endpoint": "POST /batch",
+            "max_operations": 30,
+            "purpose": "Process multiple operations efficiently"
+          }
+        }
+      }
+    },
+
+    "data_structures": {
+      "field_mappings": {
+        "client_to_customer": {
+          "jobber_client": {
+            "id": "Unique identifier for linking",
+            "firstName": "Individual customer first name",
+            "lastName": "Individual customer last name",
+            "companyName": "Business customer name",
+            "emails[0].address": "Primary email address",
+            "phones[0].number": "Primary phone number",
+            "billingAddress": "Customer billing address",
+            "isCompany": "Boolean flag for business vs individual"
+          },
+          "quickbooks_customer": {
+            "Id": "System generated ID",
+            "DisplayName": "Derived from firstName + lastName OR companyName",
+            "GivenName": "Maps to firstName",
+            "FamilyName": "Maps to lastName",
+            "CompanyName": "Maps to companyName",
+            "PrimaryEmailAddr.Address": "Maps to emails[0].address",
+            "PrimaryPhone.FreeFormNumber": "Maps to phones[0].number",
+            "BillAddr": "Maps to billingAddress structure"
+          },
+          "transformation_rules": {
+            "display_name_logic": "Use companyName if isCompany=true, else 'firstName lastName'",
+            "address_structure": "Convert Jobber flat address to QuickBooks nested structure",
+            "phone_formatting": "Normalize phone number format",
+            "duplicate_prevention": "Check existing customers by email or display name"
+          }
+        },
+        "job_to_invoice": {
+          "jobber_job": {
+            "id": "Job identifier",
+            "jobNumber": "Sequential job number",
+            "title": "Job description",
+            "client.id": "Associated customer",
+            "lineItems": "Array of billable items",
+            "amounts.total": "Total job amount"
+          },
+          "quickbooks_invoice": {
+            "DocNumber": "Maps to jobNumber or generate sequential",
+            "CustomerRef.value": "Maps to linked customer ID",
+            "Line": "Array mapped from lineItems",
+            "TotalAmt": "Calculated from line items",
+            "Memo": "Maps to job title or description"
+          },
+          "line_item_mapping": {
+            "jobber_line_item": {
+              "name": "Service or product name",
+              "quantity": "Quantity provided",
+              "unitPrice": "Price per unit",
+              "total": "quantity * unitPrice"
+            },
+            "quickbooks_line": {
+              "DetailType": "SalesItemLineDetail",
+              "SalesItemLineDetail.ItemRef": "Reference to service item",
+              "SalesItemLineDetail.Qty": "Maps to quantity",
+              "SalesItemLineDetail.UnitPrice": "Maps to unitPrice",
+              "Amount": "Maps to total"
+            }
+          }
+        },
+        "payment_mapping": {
+          "jobber_payment": {
+            "amount": "Payment amount",
+            "paymentDate": "Date payment received",
+            "paymentMethod": "Method used (cash, card, check)",
+            "invoice.id": "Associated invoice"
+          },
+          "quickbooks_payment": {
+            "TotalAmt": "Maps to amount",
+            "TxnDate": "Maps to paymentDate",
+            "PaymentMethodRef": "Maps to paymentMethod",
+            "Line[0].LinkedTxn.TxnId": "Maps to invoice ID",
+            "Line[0].LinkedTxn.TxnType": "Always 'Invoice'"
+          }
+        }
+      },
+      "data_validation": {
+        "required_fields": {
+          "customer": ["DisplayName"],
+          "invoice": ["CustomerRef", "Line"],
+          "payment": ["TotalAmt", "CustomerRef"]
+        },
+        "field_limits": {
+          "display_name": "110 characters max",
+          "memo_fields": "4000 characters max",
+          "decimal_precision": "2 decimal places for amounts"
+        },
+        "business_rules": {
+          "duplicate_customers": "Check by email and display name before creating",
+          "invoice_numbering": "Use Jobber job number or sequential QuickBooks numbering",
+          "item_references": "Ensure all line items reference valid QuickBooks items"
+        }
+      }
+    },
+
+    "rate_limiting": {
+      "jobber": {
+        "ddos_protection": "2,500 requests per 5 minutes per app/account",
+        "graphql_cost": "Query cost-based using leaky bucket algorithm",
+        "cost_calculation": "Points deducted per query, restored over time",
+        "best_practices": [
+          "Use pagination to reduce query cost",
+          "Implement delays when approaching limits",
+          "Cache common results",
+          "Monitor currentlyAvailable points before requests",
+          "Avoid deeply nested queries"
+        ],
+        "error_response": {
+          "status_code": 429,
+          "error_message": "Throttled",
+          "cost_info": "Available in extensions.cost.throttleStatus"
+        }
+      },
+      "quickbooks": {
+        "rate_limit": "500 requests per minute per realmId (company)",
+        "concurrent_limit": "Maximum 10 concurrent requests per realmId",
+        "batch_counting": "Batch requests count as 1 request regardless of operations",
+        "max_batch_size": "30 operations per batch request",
+        "best_practices": [
+          "Use single-threaded requests to same realmId",
+          "Leverage batch operations whenever possible",
+          "Implement exponential backoff for 429 errors",
+          "Include requestId for idempotent operations",
+          "Monitor rate limit headers in responses"
+        ],
+        "error_response": {
+          "status_code": 429,
+          "retry_after_header": "Indicates wait time in seconds"
+        }
+      }
+    },
+
+    "integration_patterns": {
+      "recommended_architecture": {
+        "pattern": "One-way sync from Jobber to QuickBooks",
+        "trigger": "Event-driven using Jobber webhooks",
+        "data_flow": "Jobber (source) → Transformation Layer → QuickBooks (target)",
+        "benefits": [
+          "Eliminates conflict resolution complexity",
+          "Maintains single source of truth in Jobber",
+          "Reduces data corruption risk",
+          "Provides real-time financial visibility"
+        ]
+      },
+      "synchronization_strategy": {
+        "initial_sync": {
+          "method": "Full synchronization",
+          "order": ["customers", "items", "historical_invoices", "payments"],
+          "validation": "Comprehensive data quality checks"
+        },
+        "ongoing_sync": {
+          "method": "Incremental sync via webhooks",
+          "real_time_events": [
+            "client_created",
+            "job_completed",
+            "invoice_generated",
+            "payment_received"
+          ],
+          "backup_polling": "Daily reconciliation check"
+        }
+      },
+      "error_handling_strategy": {
+        "retry_logic": {
+          "transient_errors": "Exponential backoff with max 5 retries",
+          "rate_limits": "Respect Retry-After header, implement backoff",
+          "authentication": "Automatic token refresh on 401 errors"
+        },
+        "data_validation": {
+          "pre_sync": "Validate all required fields and formats",
+          "post_sync": "Verify successful creation/update",
+          "conflict_resolution": "Last writer wins with audit trail"
+        },
+        "failure_recovery": {
+          "dead_letter_queue": "Store failed operations for manual review",
+          "partial_failures": "Continue processing remaining items in batch",
+          "rollback_strategy": "Transaction-based operations where possible"
+        }
+      }
+    },
+
+    "error_handling": {
+      "jobber_errors": {
+        "common_errors": {
+          "401": {
+            "error": "Invalid Token Error",
+            "action": "Automatically refresh access token using refresh token",
+            "retry": "Immediate retry after token refresh"
+          },
+          "429": {
+            "error": "Throttled - Rate limit exceeded",
+            "action": "Check throttleStatus in response extensions",
+            "retry": "Wait based on restoreRate and currentlyAvailable points"
+          },
+          "400": {
+            "error": "GraphQL validation errors",
+            "action": "Check userErrors in mutation response",
+            "retry": "Fix validation issues before retry"
+          }
+        },
+        "error_response_structure": {
+          "graphql_errors": "errors[] array with message and extensions",
+          "user_errors": "userErrors[] in mutation responses with message and path",
+          "rate_limit_info": "extensions.cost with throttle status"
+        }
+      },
+      "quickbooks_errors": {
+        "common_errors": {
+          "400": {
+            "error": "Bad Request - Validation error",
+            "action": "Check Fault.Error array for specific validation issues",
+            "retry": "Fix data issues before retry"
+          },
+          "401": {
+            "error": "Unauthorized - Token expired",
+            "action": "Refresh access token using refresh token",
+            "retry": "Immediate retry after token refresh"
+          },
+          "429": {
+            "error": "Too Many Requests",
+            "action": "Respect Retry-After header value",
+            "retry": "Exponential backoff with Retry-After minimum"
+          },
+          "500": {
+            "error": "Internal Server Error",
+            "action": "Log error and implement retry with backoff",
+            "retry": "Exponential backoff up to maximum attempts"
+          }
+        },
+        "error_response_structure": {
+          "fault_structure": "Fault.Error[] with code, element, and Detail",
+          "business_validation": "Error code 6000 for business rule violations",
+          "duplicate_detection": "Error code 3200 for duplicate document numbers"
+        }
+      },
+      "implementation_patterns": {
+        "retry_mechanism": {
+          "exponential_backoff": "delay = base_delay * (2 ^ attempt_number)",
+          "max_retries": 5,
+          "jitter": "Add random variance to prevent thundering herd",
+          "circuit_breaker": "Stop retries after consecutive failure threshold"
+        },
+        "error_logging": {
+          "structured_logging": "Include correlation IDs for tracing",
+          "error_categories": "Categorize as transient, permanent, or business errors",
+          "alerting": "Set up monitoring for error rate thresholds"
+        }
+      }
+    },
+
+    "implementation_examples": {
+      "authentication_flow": {
+        "jobber_token_refresh": {
+          "language": "javascript",
+          "code": "async function refreshJobberToken(refreshToken) {\n  const response = await fetch('https://api.getjobber.com/api/oauth/token', {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      grant_type: 'refresh_token',\n      refresh_token: refreshToken,\n      client_id: process.env.JOBBER_CLIENT_ID,\n      client_secret: process.env.JOBBER_CLIENT_SECRET\n    })\n  });\n  return response.json();\n}"
+        },
+        "quickbooks_token_refresh": {
+          "language": "javascript",
+          "code": "async function refreshQuickBooksToken(refreshToken) {\n  const response = await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },\n    body: new URLSearchParams({\n      grant_type: 'refresh_token',\n      refresh_token: refreshToken\n    }),\n    auth: { username: clientId, password: clientSecret }\n  });\n  return response.json();\n}"
+        }
+      },
+      "data_sync_patterns": {
+        "jobber_client_query": {
+          "language": "graphql",
+          "code": "query GetClients($cursor: String, $limit: Int = 50) {\n  clients(first: $limit, after: $cursor) {\n    nodes {\n      id\n      firstName\n      lastName\n      companyName\n      isCompany\n      emails {\n        address\n        primary\n        description\n      }\n      phones {\n        number\n        primary\n        description\n      }\n      billingAddress {\n        street\n        street2\n        city\n        province\n        postalCode\n        country\n      }\n    }\n    pageInfo {\n      hasNextPage\n      endCursor\n    }\n  }\n}"
+        },
+        "quickbooks_customer_creation": {
+          "language": "javascript",
+          "code": "async function createQuickBooksCustomer(jobberClient) {\n  const customer = {\n    DisplayName: jobberClient.isCompany ? jobberClient.companyName : `${jobberClient.firstName} ${jobberClient.lastName}`,\n    GivenName: jobberClient.firstName,\n    FamilyName: jobberClient.lastName,\n    CompanyName: jobberClient.companyName,\n    PrimaryEmailAddr: {\n      Address: jobberClient.emails.find(e => e.primary)?.address\n    },\n    PrimaryPhone: {\n      FreeFormNumber: jobberClient.phones.find(p => p.primary)?.number\n    },\n    BillAddr: {\n      Line1: jobberClient.billingAddress.street,\n      Line2: jobberClient.billingAddress.street2,\n      City: jobberClient.billingAddress.city,\n      CountrySubDivisionCode: jobberClient.billingAddress.province,\n      PostalCode: jobberClient.billingAddress.postalCode,\n      Country: jobberClient.billingAddress.country\n    }\n  };\n  \n  const response = await fetch(`${qbBaseUrl}/customer`, {\n    method: 'POST',\n    headers: {\n      'Authorization': `Bearer ${accessToken}`,\n      'Content-Type': 'application/json'\n    },\n    body: JSON.stringify(customer)\n  });\n  \n  return response.json();\n}"
+        }
+      },
+      "webhook_handling": {
+        "jobber_webhook_verification": {
+          "language": "javascript",
+          "code": "function verifyJobberWebhook(payload, signature, secret) {\n  const hmac = crypto.createHmac('sha256', secret);\n  hmac.update(payload);\n  const calculatedSignature = hmac.digest('base64');\n  return crypto.timingSafeEqual(\n    Buffer.from(signature),\n    Buffer.from(calculatedSignature)\n  );\n}"
+        },
+        "webhook_processor": {
+          "language": "javascript",
+          "code": "async function processJobberWebhook(event) {\n  const { topic, itemId, accountId } = event.data.webHookEvent;\n  \n  switch(topic) {\n    case 'CLIENT_CREATE':\n      await syncClientToQuickBooks(itemId, accountId);\n      break;\n    case 'JOB_COMPLETE':\n      await createQuickBooksInvoice(itemId, accountId);\n      break;\n    case 'INVOICE_PAID':\n      await recordQuickBooksPayment(itemId, accountId);\n      break;\n    default:\n      console.log(`Unhandled webhook topic: ${topic}`);\n  }\n}"
+        }
+      },
+      "error_handling_implementation": {
+        "retry_with_backoff": {
+          "language": "javascript",
+          "code": "async function retryWithBackoff(fn, maxRetries = 5) {\n  let attempt = 0;\n  while (attempt < maxRetries) {\n    try {\n      return await fn();\n    } catch (error) {\n      attempt++;\n      if (attempt >= maxRetries) throw error;\n      \n      if (error.status === 429) {\n        const retryAfter = error.headers['retry-after'] || Math.pow(2, attempt);\n        await sleep(retryAfter * 1000);\n      } else if (error.status >= 500) {\n        await sleep(Math.pow(2, attempt) * 1000 + Math.random() * 1000);\n      } else {\n        throw error; // Don't retry client errors\n      }\n    }\n  }\n}"
+        }
+      }
+    },
+
+    "best_practices": {
+      "performance_optimization": [
+        "Use GraphQL query cost calculation to optimize Jobber requests",
+        "Implement cursor-based pagination for large datasets",
+        "Leverage QuickBooks batch operations to reduce API calls",
+        "Cache frequently accessed reference data (items, customers)",
+        "Use conditional requests with ETags where supported"
+      ],
+      "data_quality": [
+        "Validate all data before API calls to prevent errors",
+        "Implement duplicate detection using email and name matching",
+        "Use external reference fields to maintain system relationships",
+        "Regular data reconciliation to identify and fix inconsistencies",
+        "Audit trail logging for all sync operations"
+      ],
+      "security": [
+        "Store OAuth tokens securely using encrypted storage",
+        "Implement proper token rotation and refresh mechanisms",
+        "Use HTTPS for all API communications",
+        "Validate webhook signatures to prevent spoofing",
+        "Follow principle of least privilege for API scopes"
+      ],
+      "monitoring_and_observability": [
+        "Implement comprehensive logging with correlation IDs",
+        "Set up alerting for error rates and API limits",
+        "Monitor sync performance and data consistency",
+        "Track business metrics (sync success rates, data volumes)",
+        "Use structured logging for better searchability"
+      ]
+    },
+
+    "deployment_considerations": {
+      "environment_management": {
+        "development": "Use sandbox environments for both APIs",
+        "staging": "Test with production-like data volumes",
+        "production": "Implement gradual rollout with feature flags"
+      },
+      "scalability": {
+        "horizontal_scaling": "Design stateless services for multiple instances",
+        "queue_management": "Use message queues for async processing",
+        "database_optimization": "Implement proper indexing for lookup operations",
+        "caching_strategy": "Multi-layer caching for performance"
+      },
+      "disaster_recovery": {
+        "backup_procedures": "Regular backup of sync state and mappings",
+        "rollback_capability": "Ability to revert sync operations if needed",
+        "data_recovery": "Process for recovering from data corruption",
+        "business_continuity": "Manual processes for critical operations during outages"
+      }
+    }
+  }
+}
