@@ -1,4 +1,3 @@
-import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuthStatus, useSyncStats } from '../hooks/useWorkSyncAPI';
 import './Dashboard.css';
